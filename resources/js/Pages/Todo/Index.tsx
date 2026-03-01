@@ -4,87 +4,71 @@ import TodoFilterBar from '@/Components/Todo/TodoFilterBar';
 import TodoFormModal from '@/Components/Todo/TodoFormModal';
 import TodoItem from '@/Components/Todo/TodoItem';
 import TodoStats from '@/Components/Todo/TodoStats';
-import { MOCK_TODOS } from '@/Components/Todo/mockData';
 import { Button } from '@/Components/ui/button';
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Todo, TodoFilters, TodoFormData, TodoPriority, TodoSortKey } from '@/types/todo';
-import { Head } from '@inertiajs/react';
+import { Todo, TodoFilters, TodoFormData, SortDirection, TodoPriority, TodoSortKey, TodoStatus } from '@/types/todo';
+import { Head, router } from '@inertiajs/react';
 import { Plus } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
-const DEFAULT_FILTERS: TodoFilters = {
-    status: 'all',
-    priority: 'all',
-    searchQuery: '',
-    sortKey: 'created_at',
-    sortDirection: 'desc',
-};
+interface ServerFilters {
+    status: string;
+    priority: string;
+    search: string;
+    sort_key: string;
+    sort_direction: string;
+}
 
-const PRIORITY_ORDER: Record<TodoPriority, number> = { high: 0, medium: 1, low: 2 };
+interface Props {
+    todos: Todo[];
+    filters: ServerFilters;
+}
 
-export default function TodoIndex() {
-    const [todos, setTodos] = useState<Todo[]>(MOCK_TODOS);
-    const [filters, setFilters] = useState<TodoFilters>(DEFAULT_FILTERS);
+function toFrontendFilters(f: ServerFilters): TodoFilters {
+    return {
+        status: (f.status || 'all') as TodoStatus | 'all',
+        priority: (f.priority || 'all') as TodoPriority | 'all',
+        searchQuery: f.search || '',
+        sortKey: (f.sort_key || 'created_at') as TodoSortKey,
+        sortDirection: (f.sort_direction || 'desc') as SortDirection,
+    };
+}
+
+function toServerFilters(f: TodoFilters): Record<string, string> {
+    return {
+        status: f.status,
+        priority: f.priority,
+        search: f.searchQuery,
+        sort_key: f.sortKey,
+        sort_direction: f.sortDirection,
+    };
+}
+
+export default function TodoIndex({ todos, filters: serverFilters }: Props) {
+    const [filters, setFilters] = useState<TodoFilters>(() => toFrontendFilters(serverFilters));
 
     const [formModalOpen, setFormModalOpen] = useState(false);
     const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
     const [deletingTodo, setDeletingTodo] = useState<Todo | null>(null);
-
-    const filteredTodos = useMemo(() => {
-        let result = todos.filter((todo) => {
-            if (filters.status !== 'all' && todo.status !== filters.status) return false;
-            if (filters.priority !== 'all' && todo.priority !== filters.priority) return false;
-            if (filters.searchQuery) {
-                const q = filters.searchQuery.toLowerCase();
-                if (
-                    !todo.title.toLowerCase().includes(q) &&
-                    !(todo.description?.toLowerCase().includes(q)) &&
-                    !(todo.category?.toLowerCase().includes(q))
-                ) {
-                    return false;
-                }
-            }
-            return true;
-        });
-
-        result = [...result].sort((a, b) => {
-            const dir = filters.sortDirection === 'asc' ? 1 : -1;
-            const key = filters.sortKey as TodoSortKey;
-
-            if (key === 'priority') {
-                return (PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]) * dir;
-            }
-            if (key === 'due_date') {
-                const aVal = a.due_date ?? '9999-12-31';
-                const bVal = b.due_date ?? '9999-12-31';
-                return aVal < bVal ? -dir : aVal > bVal ? dir : 0;
-            }
-            const aVal = (a[key] as string) ?? '';
-            const bVal = (b[key] as string) ?? '';
-            return aVal < bVal ? -dir : aVal > bVal ? dir : 0;
-        });
-
-        return result;
-    }, [todos, filters]);
 
     const hasFilters =
         filters.status !== 'all' ||
         filters.priority !== 'all' ||
         filters.searchQuery !== '';
 
+    const handleFilterChange = (newFilters: TodoFilters) => {
+        setFilters(newFilters);
+        router.get('/todos', toServerFilters(newFilters), {
+            preserveState: true,
+            replace: true,
+        });
+    };
+
     const handleToggleComplete = (id: number) => {
-        setTodos((prev) =>
-            prev.map((todo) =>
-                todo.id === id
-                    ? {
-                          ...todo,
-                          status: todo.status === 'done' ? 'pending' : 'done',
-                          completed_at:
-                              todo.status === 'done' ? null : new Date().toISOString(),
-                      }
-                    : todo,
-            ),
-        );
+        const todo = todos.find((t) => t.id === id);
+        if (!todo) return;
+        const newStatus = todo.status === 'done' ? 'pending' : 'done';
+        router.patch(`/todos/${id}`, { status: newStatus }, { preserveScroll: true });
     };
 
     const handleCreate = () => {
@@ -103,47 +87,40 @@ export default function TodoIndex() {
 
     const handleFormSubmit = (data: TodoFormData) => {
         if (editingTodo) {
-            setTodos((prev) =>
-                prev.map((todo) =>
-                    todo.id === editingTodo.id
-                        ? {
-                              ...todo,
-                              ...data,
-                              description: data.description || null,
-                              due_date: data.due_date || null,
-                              category: data.category || null,
-                              updated_at: new Date().toISOString(),
-                          }
-                        : todo,
-                ),
-            );
+            router.patch(`/todos/${editingTodo.id}`, { ...data }, {
+                onSuccess: () => {
+                    setFormModalOpen(false);
+                    setEditingTodo(null);
+                },
+            });
         } else {
-            const newTodo: Todo = {
-                id: Date.now(),
-                title: data.title,
-                description: data.description || null,
-                status: data.status,
-                priority: data.priority,
-                due_date: data.due_date || null,
-                completed_at: data.status === 'done' ? new Date().toISOString() : null,
-                category: data.category || null,
-                tags: [],
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-            };
-            setTodos((prev) => [newTodo, ...prev]);
+            router.post('/todos', { ...data }, {
+                onSuccess: () => {
+                    setFormModalOpen(false);
+                },
+            });
         }
-        setFormModalOpen(false);
-        setEditingTodo(null);
     };
 
     const handleDeleteConfirm = (id: number) => {
-        setTodos((prev) => prev.filter((todo) => todo.id !== id));
-        setDeletingTodo(null);
+        router.delete(`/todos/${id}`, {
+            onSuccess: () => setDeletingTodo(null),
+        });
     };
 
     const handleClearFilters = () => {
-        setFilters(DEFAULT_FILTERS);
+        const defaultFilters: TodoFilters = {
+            status: 'all',
+            priority: 'all',
+            searchQuery: '',
+            sortKey: 'created_at',
+            sortDirection: 'desc',
+        };
+        setFilters(defaultFilters);
+        router.get('/todos', toServerFilters(defaultFilters), {
+            preserveState: true,
+            replace: true,
+        });
     };
 
     return (
@@ -167,17 +144,17 @@ export default function TodoIndex() {
                     <div className="space-y-6">
                         <TodoStats todos={todos} />
 
-                        <TodoFilterBar filters={filters} onChange={setFilters} />
+                        <TodoFilterBar filters={filters} onChange={handleFilterChange} />
 
                         <div className="space-y-2">
-                            {filteredTodos.length === 0 ? (
+                            {todos.length === 0 ? (
                                 <TodoEmptyState
                                     hasFilters={hasFilters}
                                     onClearFilters={handleClearFilters}
                                     onCreateNew={handleCreate}
                                 />
                             ) : (
-                                filteredTodos.map((todo) => (
+                                todos.map((todo) => (
                                     <TodoItem
                                         key={todo.id}
                                         todo={todo}
